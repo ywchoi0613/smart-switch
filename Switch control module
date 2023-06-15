@@ -1,0 +1,152 @@
+#include <SoftwareSerial.h>  //시리얼 통신 라이브러리
+#include "Servo.h"           //서보 라이브러리
+#include <SPI.h>
+#include <nRF24L01.h>
+#include <RF24.h>
+
+//블루투스
+int bleTx = 2;                           //Tx (블루투스 보내는 핀)
+int bleRx = 3;                           //Rx (블루투스 받는 핀)
+SoftwareSerial bluetooth(bleTx, bleRx);  //시리얼 통신을 위한 객체 선언
+String bleInputString = "";              //블루투스로부터 받는 문자열
+String servoOnTriggerCommand = "on";
+
+//서보
+Servo myservo;
+int servoSignal = 9;         //서보 시그널 핀
+int servoInitialAngle = 90;  //초기 각도
+int servoOffAngle = 50;
+int servoOnAngle = 130;
+
+//타이머
+unsigned long lastOnTime = 0;
+unsigned long onTime = 5000;  // 5 seconds
+
+
+//무선통신모듈
+RF24 radio(8, 10); //CE,CSN 핀번호
+const byte address[6] = "00001"; // 송신부와 동일한 주소 사용
+
+unsigned long startTime;
+unsigned long previousTime = 0;  // 이전 실행 시간
+unsigned long currentTime = millis();
+
+//pir센서
+#define Pir 7
+int highCount = 0;
+int lowCount = 0;
+
+//조도센서인터벌
+const unsigned long interval = 30* 60 * 1000;  // 30분을 밀리초로 변환한 값
+
+void setup() {
+  myservo.attach(servoSignal);       //서보 시그널 핀 설정. 지정한 핀에 연결된 서보모터를 활성화
+  myservo.write(servoInitialAngle);  //서보 초기 각도 설정
+
+  bluetooth.begin(9600);  //블루투스 시리얼 개방
+  Serial.begin(9600);     //디버그용 시리얼 개방
+
+  radio.begin();
+  radio.openReadingPipe(1, address);
+  radio.startListening();
+  pinMode(Pir, INPUT); //pir 센서
+  startTime = millis(); //pir 시작 시간 기록
+}
+
+void loop() {
+
+  while (bluetooth.available()) {
+    char inputChar = (char)bluetooth.read();  //bluetooth 로 부터 읽어온 int 형식의 값을 char 로 변환
+    if (inputChar != '\n') {
+      bleInputString += inputChar;
+    }
+
+    delay(5);  // 수신 문자열 끊김 방지
+  }
+
+  if (!bleInputString.equals("")) {
+    Serial.println(bleInputString);  //디버그용 출력
+    if (bleInputString == servoOnTriggerCommand) {
+      myservo.write(servoOnAngle);
+      delay(100);
+      myservo.write(servoInitialAngle);
+    } else {
+      myservo.write(servoOffAngle);
+      delay(100);
+      myservo.write(servoInitialAngle);
+    }
+    bleInputString = "";
+  }
+
+  //조도센서
+
+  if (currentTime - previousTime >= interval) {
+    previousTime = currentTime;  // 이전 실행 시간을 현재 시간으로 갱신
+
+    if (radio.available()) {
+      int lightIntensity;
+      radio.read(&lightIntensity, sizeof(lightIntensity));
+
+      Serial.print("수신된 빛의 세기: ");
+      Serial.println(lightIntensity);
+
+      // 빛의 세기에 따라 서보 모터 제어
+      if (lightIntensity <= 170) {
+        myservo.write(servoOffAngle);
+        delay(100);
+        myservo.write(servoInitialAngle);
+        Serial.println("light");
+      }
+    }
+  }
+
+  //pir 센서
+  // 10분(600000ms) 동안 센서 값의 비율을 계산
+  // PirRatio 변수를 선언하고 초기화
+  
+  int PirVal = digitalRead(Pir);
+Serial.println(PirVal);
+
+double PirRatio = static_cast<double>(highCount) / (highCount + lowCount);
+
+if (PirVal == 1) {
+  highCount++;
+} else {
+  lowCount++;
+}
+
+//10분마다 pirval 계산해서 끄기
+if (currentTime - startTime >= 600000) {
+  Serial.print("HIGH ratio: ");
+  Serial.println(PirRatio);
+
+  if (PirRatio <= 0.3) {
+    //0.3보다 비율 작으면 서보모터 off
+    myservo.write(servoOffAngle);
+    delay(100);
+    myservo.write(servoInitialAngle);
+    Serial.println("piroff");
+  }
+  
+  // 변수 초기화
+  startTime = currentTime;
+  highCount = 0;
+  lowCount = 0;
+}
+
+// 10초마다 켜기
+if (currentTime - previousTime >= 10000) {
+  if (PirRatio > 0.5) {
+    // 0.5보다 크면 서보모터 on
+    myservo.write(servoOnAngle);
+    delay(100);
+    myservo.write(servoInitialAngle);
+    Serial.println("piron");
+  }
+  
+  // previousTime 업데이트
+  previousTime = currentTime;
+}
+
+delay(1000);
+}
